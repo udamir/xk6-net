@@ -1,0 +1,56 @@
+{
+  "name": "xk6-net",
+  "version": "1.0.0",
+  "description": "A k6 extension for TCP socket communication with message handling capabilities",
+  "types": "index.d.ts",
+  "keywords": [
+    "k6",
+    "k6-extension",
+    "xk6",
+    "tcp",
+    "socket",
+    "networking",
+    "load-testing",
+    "protobuf",
+    "binary-protocol"
+  ],
+  "author": {
+    "name": "Damir Yusipov", 
+    "url": "https://github.com/udamir"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/udamir/xk6-net.git"
+  },
+  "homepage": "https://github.com/udamir/xk6-net#readme",
+  "bugs": {
+    "url": "https://github.com/udamir/xk6-net/issues"
+  },
+  "files": [
+    "index.d.ts",
+    "README.md",
+    "LICENSE",
+    "examples/"
+  ],
+  "scripts": {
+    "test": "go test -v",
+    "test:coverage": "go test -coverprofile=coverage.out && go tool cover -html=coverage.out -o coverage.html",
+    "build": "./build.sh",
+    "bench": "go test -bench=.",
+    "lint:types": "tsc --noEmit index.d.ts"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/k6": "^0.48.0"
+  },
+  "peerDependencies": {
+    "k6": ">=0.40.0"
+  },
+  "engines": {
+    "k6": ">=0.40.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
