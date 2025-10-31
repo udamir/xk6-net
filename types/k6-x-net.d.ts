@@ -144,16 +144,3 @@ declare module 'k6/x/net' {
   const net: NetModule;
   export default net;
 }
-
-// Global augmentation for k6 modules
-declare global {
-  namespace K6 {
-    namespace Modules {
-      interface Modules {
-        'k6/x/net': typeof import('k6/x/net');
-      }
-    }
-  }
-}
-
-export {};

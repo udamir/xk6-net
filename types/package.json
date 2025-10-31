@@ -1,18 +1,16 @@
 {
   "name": "xk6-net",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "description": "A k6 extension for TCP socket communication with message handling capabilities",
-  "types": "index.d.ts",
+  "main": "k6-x-net.d.ts",
+  "types": "k6-x-net.d.ts",
   "keywords": [
     "k6",
     "k6-extension",
     "xk6",
     "tcp",
     "socket",
-    "networking",
-    "load-testing",
-    "protobuf",
-    "binary-protocol"
+    "networking"
   ],
   "author": {
     "name": "Damir Yusipov", 
