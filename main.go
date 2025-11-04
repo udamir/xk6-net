@@ -1,6 +1,7 @@
 package net
 
 import (
+	"crypto/tls"
 	"bufio"
 	"bytes"
 	"encoding/binary"
@@ -30,10 +31,19 @@ type Net struct {
 
 // SocketConfig represents the configuration options for a Socket
 type SocketConfig struct {
+	// Connection parameters
+	Host              string `json:"host"`
+	Port              int    `json:"port"`
+	Timeout           int    `json:"timeout"`
+	// Message framing
 	LengthFieldLength int    `json:"lengthFieldLength"`
 	MaxLength         int    `json:"maxLength"`
 	Encoding          string `json:"encoding"`
 	Delimiter         string `json:"delimiter"`
+	// TLS configuration
+	UseTLS            bool   `json:"tls"`
+	ServerName        string `json:"serverName"`
+	InsecureSkipVerify bool  `json:"insecureSkipVerify"`
 }
 
 // Socket represents a TCP socket with message handling capabilities
@@ -71,23 +81,20 @@ func (n *Net) Exports() modules.Exports {
 	}
 }
 
-// socketConstructor returns a JS constructor compatible with `new net.Socket(config)`
+// socketConstructor returns a JS constructor compatible with `new net.Socket()`
 func (n *Net) socketConstructor() func(sobek.ConstructorCall) *sobek.Object {
 	rt := n.vu.Runtime()
 	return func(call sobek.ConstructorCall) *sobek.Object {
-		cfg := SocketConfig{}
-		if len(call.Arguments) > 0 {
-			arg0 := call.Argument(0)
-			if !sobek.IsUndefined(arg0) && !sobek.IsNull(arg0) {
-				if err := rt.ExportTo(arg0, &cfg); err != nil {
-					panic(rt.NewTypeError("invalid Socket config: %v", err))
-				}
-			}
-		}
-		sock := n.NewSocket(cfg)
+		sock := n.NewSocket()
 		// Expose lower-case JS API to match README/types
 		obj := rt.NewObject()
-		_ = obj.Set("connect", func(addr string, timeoutMs int) error { return sock.Connect(addr, timeoutMs) })
+		_ = obj.Set("connect", func(config sobek.Value) error {
+			var cfg SocketConfig
+			if err := rt.ExportTo(config, &cfg); err != nil {
+				return fmt.Errorf("invalid connect config: %v", err)
+			}
+			return sock.Connect(cfg)
+		})
 		_ = obj.Set("on", func(event string, handler interface{}) { sock.On(event, handler) })
 		_ = obj.Set("send", func(data []byte) error { return sock.Send(data) })
 		_ = obj.Set("write", func(data []byte) error { return sock.Write(data) })
@@ -96,24 +103,16 @@ func (n *Net) socketConstructor() func(sobek.ConstructorCall) *sobek.Object {
 	}
 }
 
-// NewSocket creates a new Socket instance with the given configuration
-func (n *Net) NewSocket(config SocketConfig) *Socket {
-	// Set default values
-	if config.Encoding == "" {
-		config.Encoding = "binary"
-	} else if config.Encoding != "binary" && config.Encoding != "utf-8" {
-		config.Encoding = "binary"
-	}
-
+// NewSocket creates a new Socket instance
+func (n *Net) NewSocket() *Socket {
 	return &Socket{
-		config:  config,
 		readers: make(chan bool, 1),
 		writers: make(chan bool, 1),
 	}
 }
 
-// Connect establishes a TCP connection to the specified address
-func (s *Socket) Connect(addr string, timeoutMs int) error {
+// Connect establishes a TCP connection with the specified configuration
+func (s *Socket) Connect(config SocketConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -121,12 +120,37 @@ func (s *Socket) Connect(addr string, timeoutMs int) error {
 		return fmt.Errorf("socket is already connected")
 	}
 
-	timeout := time.Duration(timeoutMs) * time.Millisecond
-	if timeoutMs == 0 {
+	// Set default values
+	if config.Encoding == "" {
+		config.Encoding = "binary"
+	} else if config.Encoding != "binary" && config.Encoding != "utf-8" {
+		config.Encoding = "binary"
+	}
+
+	// Store config
+	s.config = config
+
+	// Build address
+	addr := fmt.Sprintf("%s:%d", config.Host, config.Port)
+
+	// Set timeout
+	timeout := time.Duration(config.Timeout) * time.Millisecond
+	if config.Timeout == 0 {
 		timeout = 60 * time.Second // default timeout
 	}
 
-	conn, err := net.DialTimeout("tcp", addr, timeout)
+	dialer := &net.Dialer{Timeout: timeout}
+	var conn net.Conn
+	var err error
+	if config.UseTLS {
+		tlsConf := &tls.Config{
+			ServerName:         config.ServerName,
+			InsecureSkipVerify: config.InsecureSkipVerify,
+		}
+		conn, err = tls.DialWithDialer(dialer, "tcp", addr, tlsConf)
+	} else {
+		conn, err = dialer.Dial("tcp", addr)
+	}
 	if err != nil {
 		if s.onError != nil {
 			s.onError(err)

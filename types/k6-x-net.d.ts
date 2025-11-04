@@ -8,6 +8,22 @@ declare module 'k6/x/net' {
    */
   export interface SocketConfig {
     /**
+     * Host address to connect to
+     */
+    host: string;
+
+    /**
+     * Port number to connect to
+     */
+    port: number;
+
+    /**
+     * Connection timeout in milliseconds
+     * @default 60000
+     */
+    timeout?: number;
+
+    /**
      * Length of the length field in bytes.
      * If lengthFieldLength is 0, then the length field is not used, and the message length is determined by maxLength.
      * If encoding is "binary" and lengthFieldLength and maxLength are both 0, then message event will not be emitted.
@@ -37,6 +53,26 @@ declare module 'k6/x/net' {
      * @default ""
      */
     delimiter?: string;
+
+    /**
+     * Enable TLS for the connection.
+     * If true, the socket will establish a TLS connection using crypto/tls.
+     * @default false
+     */
+    tls?: boolean;
+
+    /**
+     * Server name used for SNI and certificate hostname verification.
+     * Recommended to set when connecting via IP but verifying a hostname.
+     */
+    serverName?: string;
+
+    /**
+     * Skip certificate verification (NOT recommended for production).
+     * Useful for self-signed certificates during testing.
+     * @default false
+     */
+    insecureSkipVerify?: boolean;
   }
 
   /**
@@ -80,18 +116,16 @@ declare module 'k6/x/net' {
   export class Socket {
     /**
      * Create a new Socket instance
-     * @param config Socket configuration options
      */
-    constructor(config?: SocketConfig);
+    constructor();
 
     /**
-     * Establish a TCP connection to the specified address
-     * @param addr Address in format "host:port" (e.g., "localhost:8080")
-     * @param timeoutMs Connection timeout in milliseconds
+     * Establish a TCP connection with the specified configuration
+     * @param config Socket configuration including host, port, and connection options
      * @returns Promise that resolves when connection is established
      * @throws Error if connection fails
      */
-    connect(addr: string, timeoutMs?: number): void;
+    connect(config: SocketConfig): void;
 
     /**
      * Register an event handler for the specified event type

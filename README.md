@@ -29,35 +29,50 @@ xk6 build --with github.com/udamir/xk6-net@latest
 import net from 'k6/x/net';
 import { check } from 'k6';
 
-const socket = new net.Socket({
-  /**
-   * Length of the length field in bytes
-   * if lengthFieldLength is 0, then the length field is not used, and the message length is determined by maxLength. 
-   * If encoding is "binary" and lengthFieldLength and maxLength are both 0, then message event will not be emitted.
-   */
-  lengthFieldLength: 4,
-  /**
-   * Maximum message length in bytes
-   * If maxLength is 0, then the maximum message length is not limited
-   */
-  maxLength: 1 * 1024 * 1024,
-  /**
-   * Encoding of the message: "utf-8" or "binary"
-   * If encoding is "utf-8", then the message is decoded using utf-8 encoding
-   * If encoding is "binary", then the message is decoded using binary encoding
-   */
-  encoding: "binary",
-  /**
-   * Delimiter for the message
-   * If encoding is "utf-8" and delimiter is not empty, then it will be used as delimiter for splitting messages
-   * Note that delimiter will be removed from the decoded message
-   */
-  delimiter: "",
-});
+const socket = new net.Socket();
 
 export default function () {
 
-  socket.connect('localhost:5000', 5000)
+  socket.connect({
+    host: 'localhost',
+    port: 5000,
+    timeout: 5000,
+    /**
+     * Length of the length field in bytes
+     * if lengthFieldLength is 0, then the length field is not used, and the message length is determined by maxLength. 
+     * If encoding is "binary" and lengthFieldLength and maxLength are both 0, then message event will not be emitted.
+     */
+    lengthFieldLength: 4,
+    /**
+     * Maximum message length in bytes
+     * If maxLength is 0, then the maximum message length is not limited
+     */
+    maxLength: 1 * 1024 * 1024,
+    /**
+     * Encoding of the message: "utf-8" or "binary"
+     * If encoding is "utf-8", then the message is decoded using utf-8 encoding
+     * If encoding is "binary", then the message is decoded using binary encoding
+     */
+    encoding: "binary",
+    /**
+     * Delimiter for the message
+     * If encoding is "utf-8" and delimiter is not empty, then it will be used as delimiter for splitting messages
+     * Note that delimiter will be removed from the decoded message
+     */
+    delimiter: "",
+    /**
+     * Enable TLS for the connection
+     */
+    tls: false,
+    /**
+     * Server name for SNI and certificate verification (optional)
+     */
+    serverName: "",
+    /**
+     * Skip certificate verification - NOT recommended for production
+     */
+    insecureSkipVerify: false,
+  })
 
   socket.on("data", (data) => {
     // handle raw data (Uint8Array)
