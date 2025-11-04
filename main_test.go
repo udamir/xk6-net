@@ -104,58 +104,20 @@ func (s *testServer) stop() {
 func TestNewSocket(t *testing.T) {
 	netModule := &Net{}
 
-	tests := []struct {
-		name     string
-		config   SocketConfig
-		expected SocketConfig
-	}{
-		{
-			name:   "default config",
-			config: SocketConfig{},
-			expected: SocketConfig{
-				LengthFieldLength: 0,
-				MaxLength:         0,
-				Encoding:          "binary",
-				Delimiter:         "",
-			},
-		},
-		{
-			name: "custom config",
-			config: SocketConfig{
-				LengthFieldLength: 4,
-				MaxLength:         2048,
-				Encoding:          "utf-8",
-				Delimiter:         "\r\n",
-			},
-			expected: SocketConfig{
-				LengthFieldLength: 4,
-				MaxLength:         2048,
-				Encoding:          "utf-8",
-				Delimiter:         "\r\n",
-			},
-		},
+	socket := netModule.NewSocket()
+	if socket == nil {
+		t.Fatal("NewSocket returned nil")
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			socket := netModule.NewSocket(tt.config)
-			if socket == nil {
-				t.Fatal("NewSocket returned nil")
-			}
-
-			if socket.config.LengthFieldLength != tt.expected.LengthFieldLength {
-				t.Errorf("LengthFieldLength = %d, want %d", socket.config.LengthFieldLength, tt.expected.LengthFieldLength)
-			}
-			if socket.config.MaxLength != tt.expected.MaxLength {
-				t.Errorf("MaxLength = %d, want %d", socket.config.MaxLength, tt.expected.MaxLength)
-			}
-			if socket.config.Encoding != tt.expected.Encoding {
-				t.Errorf("Encoding = %s, want %s", socket.config.Encoding, tt.expected.Encoding)
-			}
-			if socket.config.Delimiter != tt.expected.Delimiter {
-				t.Errorf("Delimiter = %s, want %s", socket.config.Delimiter, tt.expected.Delimiter)
-			}
-		})
+	// Check initial state
+	if socket.connected {
+		t.Error("New socket should not be connected")
+	}
+	if socket.readers == nil {
+		t.Error("readers channel should be initialized")
+	}
+	if socket.writers == nil {
+		t.Error("writers channel should be initialized")
 	}
 }
 
@@ -169,10 +131,18 @@ func TestSocketConnect(t *testing.T) {
 	server.start()
 
 	netModule := &Net{}
-	socket := netModule.NewSocket(SocketConfig{})
+	socket := netModule.NewSocket()
+
+	// Parse host and port from server address
+	host := "127.0.0.1"
+	port := server.listener.Addr().(*net.TCPAddr).Port
 
 	// Test successful connection
-	err = socket.Connect(server.addr, 5000)
+	err = socket.Connect(SocketConfig{
+		Host:    host,
+		Port:    port,
+		Timeout: 5000,
+	})
 	if err != nil {
 		t.Fatalf("Connect failed: %v", err)
 	}
@@ -184,7 +154,11 @@ func TestSocketConnect(t *testing.T) {
 	socket.Close()
 
 	// Test connection to non-existent server
-	err = socket.Connect("127.0.0.1:0", 100)
+	err = socket.Connect(SocketConfig{
+		Host:    "127.0.0.1",
+		Port:    1, // Port 1 is typically unavailable
+		Timeout: 100,
+	})
 	if err == nil {
 		t.Error("Connect should have failed")
 	}
@@ -192,7 +166,7 @@ func TestSocketConnect(t *testing.T) {
 
 func TestSocketEventHandlers(t *testing.T) {
 	netModule := &Net{}
-	socket := netModule.NewSocket(SocketConfig{})
+	socket := netModule.NewSocket()
 
 	var dataReceived []byte
 	var messageReceived interface{}
@@ -264,11 +238,7 @@ func TestSocketSendReceive(t *testing.T) {
 	server.start()
 
 	netModule := &Net{}
-	socket := netModule.NewSocket(SocketConfig{
-		LengthFieldLength: 4,
-		MaxLength:         1024,
-		Encoding:          "binary",
-	})
+	socket := netModule.NewSocket()
 
 	var receivedData []byte
 	var receivedMessage interface{}
@@ -292,7 +262,18 @@ func TestSocketSendReceive(t *testing.T) {
 		}
 	})
 
-	err = socket.Connect(server.addr, 5000)
+	// Parse host and port from server address
+	host := "127.0.0.1"
+	port := server.listener.Addr().(*net.TCPAddr).Port
+
+	err = socket.Connect(SocketConfig{
+		Host:              host,
+		Port:              port,
+		Timeout:           5000,
+		LengthFieldLength: 4,
+		MaxLength:         1024,
+		Encoding:          "binary",
+	})
 	if err != nil {
 		t.Fatalf("Connect failed: %v", err)
 	}
@@ -357,9 +338,17 @@ func TestSocketWrite(t *testing.T) {
 	server.start()
 
 	netModule := &Net{}
-	socket := netModule.NewSocket(SocketConfig{})
+	socket := netModule.NewSocket()
 
-	err = socket.Connect(server.addr, 5000)
+	// Parse host and port from server address
+	host := "127.0.0.1"
+	port := server.listener.Addr().(*net.TCPAddr).Port
+
+	err = socket.Connect(SocketConfig{
+		Host:    host,
+		Port:    port,
+		Timeout: 5000,
+	})
 	if err != nil {
 		t.Fatalf("Connect failed: %v", err)
 	}
@@ -375,7 +364,7 @@ func TestSocketWrite(t *testing.T) {
 
 func TestSocketNotConnected(t *testing.T) {
 	netModule := &Net{}
-	socket := netModule.NewSocket(SocketConfig{})
+	socket := netModule.NewSocket()
 
 	// Test send when not connected
 	err := socket.Send([]byte("test"))
@@ -406,9 +395,17 @@ func TestSocketClose(t *testing.T) {
 	server.start()
 
 	netModule := &Net{}
-	socket := netModule.NewSocket(SocketConfig{})
+	socket := netModule.NewSocket()
 
-	err = socket.Connect(server.addr, 5000)
+	// Parse host and port from server address
+	host := "127.0.0.1"
+	port := server.listener.Addr().(*net.TCPAddr).Port
+
+	err = socket.Connect(SocketConfig{
+		Host:    host,
+		Port:    port,
+		Timeout: 5000,
+	})
 	if err != nil {
 		t.Fatalf("Connect failed: %v", err)
 	}
@@ -470,9 +467,11 @@ func TestDecodeMessage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			socket := netModule.NewSocket(SocketConfig{
-				Encoding: tt.encoding,
-			})
+			socket := netModule.NewSocket()
+			socket.config.Encoding = tt.encoding
+			if tt.encoding == "" {
+				socket.config.Encoding = "binary" // Set default
+			}
 
 			result := socket.decodeMessage(tt.input)
 
@@ -530,12 +529,19 @@ func TestLengthFieldValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			socket := netModule.NewSocket(SocketConfig{
-				LengthFieldLength: tt.lengthFieldLength,
-			})
+			socket := netModule.NewSocket()
+
+			// Parse host and port from server address
+			host := "127.0.0.1"
+			port := server.listener.Addr().(*net.TCPAddr).Port
 
 			// Connect the socket so we can test Send validation
-			err := socket.Connect(server.addr, 1000)
+			err := socket.Connect(SocketConfig{
+				Host:              host,
+				Port:              port,
+				Timeout:           1000,
+				LengthFieldLength: tt.lengthFieldLength,
+			})
 			if err != nil {
 				t.Fatalf("Connect failed: %v", err)
 			}
@@ -571,12 +577,19 @@ func BenchmarkSocketSend(b *testing.B) {
 	server.start()
 
 	netModule := &Net{}
-	socket := netModule.NewSocket(SocketConfig{
+	socket := netModule.NewSocket()
+
+	// Parse host and port from server address
+	host := "127.0.0.1"
+	port := server.listener.Addr().(*net.TCPAddr).Port
+
+	err = socket.Connect(SocketConfig{
+		Host:              host,
+		Port:              port,
+		Timeout:           5000,
 		LengthFieldLength: 4,
 		MaxLength:         1024,
 	})
-
-	err = socket.Connect(server.addr, 5000)
 	if err != nil {
 		b.Fatalf("Connect failed: %v", err)
 	}

@@ -33,9 +33,7 @@ const socket = new net.Socket();
 
 export default function () {
 
-  socket.connect({
-    host: 'localhost',
-    port: 5000,
+  socket.connect('localhost', 5000, {
     timeout: 5000,
     /**
      * Length of the length field in bytes
@@ -108,27 +106,61 @@ export default function () {
 
 ## TypeScript Support
 
-xk6-net includes comprehensive TypeScript type definitions for enhanced development experience:
+xk6-net includes comprehensive TypeScript type definitions for enhanced development experience.
 
 ### Installation
 
-```bash
-# Install k6 types for your project
-npm install --save-dev @types/k6
+1. Install k6 types for your project:
 
-# The xk6-net types are included automatically
+```bash
+npm install --save-dev @types/k6
+```
+
+2. Copy the type definitions from this repository to your project:
+
+```bash
+# Create a types directory if it doesn't exist
+mkdir -p types
+
+# Copy the k6-x-net.d.ts file to your types directory
+cp path/to/xk6-net/types/k6-x-net.d.ts types/
+```
+
+3. Ensure your `tsconfig.json` includes the types directory:
+
+```json
+{
+  "compilerOptions": {
+    "typeRoots": ["./node_modules/@types", "./types"]
+  }
+}
 ```
 
 ### Type Definitions
 
 The module exports the following TypeScript interfaces:
 
-- `SocketConfig` - Configuration options for Socket constructor
+- `SocketConfig` - Configuration options for Socket.connect()
 - `Socket` - Main socket class with all methods
 - `DataEventHandler` - Type for "data" event handlers
 - `MessageEventHandler` - Type for "message" event handlers  
 - `ErrorEventHandler` - Type for "error" event handlers
 - `EndEventHandler` - Type for "end" event handlers
+
+### Usage with TypeScript
+
+```typescript
+import net from 'k6/x/net';
+
+const socket = new net.Socket();
+
+// TypeScript will provide autocomplete and type checking
+socket.connect('localhost', 5000, {
+  timeout: 5000,
+  lengthFieldLength: 4,
+  encoding: 'binary'
+});
+```
 
 # License
 

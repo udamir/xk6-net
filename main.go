@@ -88,10 +88,19 @@ func (n *Net) socketConstructor() func(sobek.ConstructorCall) *sobek.Object {
 		sock := n.NewSocket()
 		// Expose lower-case JS API to match README/types
 		obj := rt.NewObject()
-		_ = obj.Set("connect", func(config sobek.Value) error {
+		_ = obj.Set("connect", func(host string, port int, config sobek.Value) error {
 			var cfg SocketConfig
-			if err := rt.ExportTo(config, &cfg); err != nil {
-				return fmt.Errorf("invalid connect config: %v", err)
+			cfg.Host = host
+			cfg.Port = port
+			
+			// Config is optional - only parse if provided
+			if !sobek.IsUndefined(config) && !sobek.IsNull(config) {
+				if err := rt.ExportTo(config, &cfg); err != nil {
+					return fmt.Errorf("invalid connect config: %v", err)
+				}
+				// Preserve host and port from parameters
+				cfg.Host = host
+				cfg.Port = port
 			}
 			return sock.Connect(cfg)
 		})

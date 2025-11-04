@@ -8,16 +8,6 @@ declare module 'k6/x/net' {
    */
   export interface SocketConfig {
     /**
-     * Host address to connect to
-     */
-    host: string;
-
-    /**
-     * Port number to connect to
-     */
-    port: number;
-
-    /**
      * Connection timeout in milliseconds
      * @default 60000
      */
@@ -120,12 +110,14 @@ declare module 'k6/x/net' {
     constructor();
 
     /**
-     * Establish a TCP connection with the specified configuration
-     * @param config Socket configuration including host, port, and connection options
+     * Establish a TCP connection with the specified host and port
+     * @param host Host address to connect to
+     * @param port Port number to connect to
+     * @param config Optional socket configuration for connection options
      * @returns Promise that resolves when connection is established
      * @throws Error if connection fails
      */
-    connect(config: SocketConfig): void;
+    connect(host: string, port: number, config?: SocketConfig): void;
 
     /**
      * Register an event handler for the specified event type
@@ -165,11 +157,10 @@ declare module 'k6/x/net' {
    */
   export interface NetModule {
     /**
-     * Create a new Socket instance with the given configuration
-     * @param config Socket configuration options
+     * Create a new Socket instance
      * @returns New Socket instance
      */
-    Socket: new (config?: SocketConfig) => Socket;
+    Socket: new () => Socket;
   }
 
   /**
