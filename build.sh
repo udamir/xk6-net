@@ -36,7 +36,7 @@ echo "Verifying xk6-net is loadable..."
 "$K6_BIN" run - <<'EOF'
 import net from 'k6/x/net';
 export default function () {
-  const s = new net.Socket({ lengthFieldLength: 4 });
+  const s = new net.Socket();
   console.log('xk6-net loaded:', typeof s.connect === 'function');
 }
 EOF
