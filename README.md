@@ -1,6 +1,6 @@
 # xk6-net
 
-A k6 extension for TCP socket communication with message handling capabilities
+A [k6 extension](https://grafana.com/docs/k6/latest/extensions/) for TCP and UDP socket operations with message handling capabilities
 
 ## Build
 
@@ -29,46 +29,35 @@ xk6 build --with github.com/udamir/xk6-net@latest
 import net from 'k6/x/net';
 import { check } from 'k6';
 
-const socket = new net.Socket();
-
 export default function () {
+  const socket = new net.Socket();
 
+  // Connect with configuration
   socket.connect('localhost', 5000, {
+    // Connection timeout in milliseconds
     timeout: 5000,
-    /**
-     * Length of the length field in bytes
-     * if lengthFieldLength is 0, then the length field is not used, and the message length is determined by maxLength. 
-     * If encoding is "binary" and lengthFieldLength and maxLength are both 0, then message event will not be emitted.
-     */
-    lengthFieldLength: 4,
-    /**
-     * Maximum message length in bytes
-     * If maxLength is 0, then the maximum message length is not limited
-     */
+
+    // Length field length for length-prefixed framing (for binary encoding)
+    // If 0, message length determined by maxLength or delimiter
+    // If both lengthFieldLength and maxLength are 0 with binary encoding, no "message" events
+    lengthFieldLength: 4,  // 0 | 1 | 2 | 4 | 8
+
+    // Maximum message length in bytes (0 = unlimited)
     maxLength: 1 * 1024 * 1024,
-    /**
-     * Encoding of the message: "utf-8" or "binary"
-     * If encoding is "utf-8", then the message is decoded using utf-8 encoding
-     * If encoding is "binary", then the message is decoded using binary encoding
-     */
+
+    // Message encoding: "binary" or "utf-8"
     encoding: "binary",
-    /**
-     * Delimiter for the message
-     * If encoding is "utf-8" and delimiter is not empty, then it will be used as delimiter for splitting messages
-     * Note that delimiter will be removed from the decoded message
-     */
+
+    // Delimiter for UTF-8 messages (removed from decoded message)
     delimiter: "",
-    /**
-     * Enable TLS for the connection
-     */
+
+    // Enable TLS/SSL
     tls: false,
-    /**
-     * Server name for SNI and certificate verification (optional)
-     */
+
+    // Server name for SNI and certificate verification
     serverName: "",
-    /**
-     * Skip certificate verification - NOT recommended for production
-     */
+
+    // Skip TLS certificate verification (NOT recommended for production)
     insecureSkipVerify: false,
   })
 
@@ -116,14 +105,14 @@ xk6-net includes comprehensive TypeScript type definitions for enhanced developm
 npm install --save-dev @types/k6
 ```
 
-2. Copy the type definitions from this repository to your project:
+2. Download the type definitions from GitHub:
 
 ```bash
 # Create a types directory if it doesn't exist
 mkdir -p types
 
-# Copy the k6-x-net.d.ts file to your types directory
-cp path/to/xk6-net/types/k6-x-net.d.ts types/
+# Download the k6-x-net.d.ts file from GitHub
+curl -o types/k6-x-net.d.ts https://raw.githubusercontent.com/udamir/xk6-net/master/types/k6-x-net.d.ts
 ```
 
 3. Ensure your `tsconfig.json` includes the types directory:
@@ -151,15 +140,40 @@ The module exports the following TypeScript interfaces:
 
 ```typescript
 import net from 'k6/x/net';
+import type { SocketConfig } from 'k6/x/net';
 
-const socket = new net.Socket();
+export default function() {
+  const socket = new net.Socket();
 
-// TypeScript will provide autocomplete and type checking
-socket.connect('localhost', 5000, {
-  timeout: 5000,
-  lengthFieldLength: 4,
-  encoding: 'binary'
-});
+  // TypeScript will provide autocomplete and type checking for SocketConfig
+  const config: SocketConfig = {
+    timeout: 5000,
+    lengthFieldLength: 4,       // Type: 0 | 1 | 2 | 4 | 8
+    maxLength: 1024 * 1024,
+    encoding: 'binary',         // Type: 'utf-8' | 'binary'
+    delimiter: '',
+    tls: false,
+    serverName: '',
+    insecureSkipVerify: false
+  };
+
+  socket.connect('localhost', 5000, config);
+
+  // Type-safe event handlers
+  socket.on('data', (data: Uint8Array) => {
+    console.log(`Received ${data.length} bytes`);
+  });
+
+  socket.on('error', (error: Error) => {
+    console.error('Socket error:', error.message);
+  });
+
+  // Send with automatic length header
+  const message = new Uint8Array([1, 2, 3, 4, 5]);
+  socket.send(message);
+
+  socket.close();
+}
 ```
 
 # License

@@ -1,15 +1,16 @@
 package net
 
 import (
-	"crypto/tls"
 	"bufio"
 	"bytes"
+	"context"
+	"crypto/tls"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net"
-	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -32,8 +33,6 @@ type Net struct {
 // SocketConfig represents the configuration options for a Socket
 type SocketConfig struct {
 	// Connection parameters
-	Host              string `json:"host"`
-	Port              int    `json:"port"`
 	Timeout           int    `json:"timeout"`
 	// Message framing
 	LengthFieldLength int    `json:"lengthFieldLength"`
@@ -48,18 +47,21 @@ type SocketConfig struct {
 
 // Socket represents a TCP socket with message handling capabilities
 type Socket struct {
-	config     SocketConfig
-	conn       net.Conn
-	connected  bool
-	mu         sync.RWMutex
-	readers    chan bool
-	writers    chan bool
-	
-	// Event handlers
-	onData    func([]byte)
-	onMessage func(interface{})
-	onError   func(error)
-	onEnd     func()
+	config        SocketConfig
+	conn          net.Conn
+	state         *StateManager // Connection state machine
+	explicitClose bool // Flag to skip onEnd when closed explicitly
+	mu            sync.RWMutex
+	readers       chan bool
+	writers       chan bool
+	vu            modules.VU // Need VU for calling sobek functions
+	events        *EventManager // Manages event callbacks on event loop
+	// Temporary handler storage before EventManager is created
+	pendingHandlers map[string]sobek.Value
+	// Goroutine lifecycle management
+	wg            sync.WaitGroup // Tracks active goroutines
+	ctx           context.Context // Context for cancellation
+	cancel        context.CancelFunc // Cancel function
 }
 
 // init is called by the Go runtime at application startup.
@@ -89,22 +91,45 @@ func (n *Net) socketConstructor() func(sobek.ConstructorCall) *sobek.Object {
 		// Expose lower-case JS API to match README/types
 		obj := rt.NewObject()
 		_ = obj.Set("connect", func(host string, port int, config sobek.Value) error {
-			var cfg SocketConfig
-			cfg.Host = host
-			cfg.Port = port
+			// Start with a base config
+			cfg := SocketConfig{}
 			
-			// Config is optional - only parse if provided
+			// Config is optional - parse only provided fields
 			if !sobek.IsUndefined(config) && !sobek.IsNull(config) {
-				if err := rt.ExportTo(config, &cfg); err != nil {
-					return fmt.Errorf("invalid connect config: %v", err)
+				configObj := config.ToObject(rt)
+				if configObj == nil {
+					return fmt.Errorf("config must be an object")
 				}
-				// Preserve host and port from parameters
-				cfg.Host = host
-				cfg.Port = port
+				
+				// Only set fields that are actually present in the JavaScript object
+				if v := configObj.Get("timeout"); v != nil && !sobek.IsUndefined(v) {
+					cfg.Timeout = int(v.ToInteger())
+				}
+				if v := configObj.Get("lengthFieldLength"); v != nil && !sobek.IsUndefined(v) {
+					cfg.LengthFieldLength = int(v.ToInteger())
+				}
+				if v := configObj.Get("maxLength"); v != nil && !sobek.IsUndefined(v) {
+					cfg.MaxLength = int(v.ToInteger())
+				}
+				if v := configObj.Get("encoding"); v != nil && !sobek.IsUndefined(v) {
+					cfg.Encoding = v.String()
+				}
+				if v := configObj.Get("delimiter"); v != nil && !sobek.IsUndefined(v) {
+					cfg.Delimiter = v.String()
+				}
+				if v := configObj.Get("tls"); v != nil && !sobek.IsUndefined(v) {
+					cfg.UseTLS = v.ToBoolean()
+				}
+				if v := configObj.Get("serverName"); v != nil && !sobek.IsUndefined(v) {
+					cfg.ServerName = v.String()
+				}
+				if v := configObj.Get("insecureSkipVerify"); v != nil && !sobek.IsUndefined(v) {
+					cfg.InsecureSkipVerify = v.ToBoolean()
+				}
 			}
-			return sock.Connect(cfg)
+			return sock.Connect(host, port, cfg)
 		})
-		_ = obj.Set("on", func(event string, handler interface{}) { sock.On(event, handler) })
+		_ = obj.Set("on", func(event string, handler sobek.Value) { sock.On(event, handler) })
 		_ = obj.Set("send", func(data []byte) error { return sock.Send(data) })
 		_ = obj.Set("write", func(data []byte) error { return sock.Write(data) })
 		_ = obj.Set("close", func() error { return sock.Close() })
@@ -115,19 +140,72 @@ func (n *Net) socketConstructor() func(sobek.ConstructorCall) *sobek.Object {
 // NewSocket creates a new Socket instance
 func (n *Net) NewSocket() *Socket {
 	return &Socket{
+		state:   NewStateManager(),
 		readers: make(chan bool, 1),
 		writers: make(chan bool, 1),
+		vu:      n.vu,
+		// events will be created in Connect() when event loop is running
+		pendingHandlers: make(map[string]sobek.Value),
 	}
 }
 
 // Connect establishes a TCP connection with the specified configuration
-func (s *Socket) Connect(config SocketConfig) error {
+func (s *Socket) Connect(host string, port int, config SocketConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.connected {
-		return fmt.Errorf("socket is already connected")
+	// Check if we can start connecting
+	if !s.state.IsClosed() {
+		return fmt.Errorf("socket is not closed (current state: %s)", s.state.Get())
 	}
+	
+	// Transition to CONNECTING state
+	if err := s.state.TransitionTo(StateConnecting); err != nil {
+		return err
+	}
+
+	// Cancel previous context if this is a reconnection
+	if s.cancel != nil {
+		s.cancel()
+		// Close the connection to unblock readLoop
+		if s.conn != nil {
+			s.conn.Close()
+		}
+		s.mu.Unlock()
+		// Wait for previous goroutines to finish before starting new connection
+		// Must wait outside the lock to avoid deadlock
+		s.wg.Wait()
+		s.mu.Lock()
+	}
+	
+	// Create new context for this connection
+	s.ctx, s.cancel = context.WithCancel(context.Background())
+
+	// Recreate event manager for reconnection to get fresh task queue
+	// Save reference to old event manager to copy handlers
+	oldEvents := s.events
+	
+	// Always create fresh EventManager to get new task queue
+	s.events = NewEventManager(s.vu)
+	
+	// Copy handlers from old event manager if it exists
+	if oldEvents != nil {
+		s.events.CopyHandlersFrom(oldEvents)
+	}
+	
+	// Apply any pending handlers that were set before first Connect
+	if s.pendingHandlers != nil {
+		for event, handler := range s.pendingHandlers {
+			s.events.SetHandler(event, handler)
+		}
+		s.pendingHandlers = nil
+	}
+
+	// Always recreate channels for fresh state on each connection
+	// This is crucial for reconnection after Close()
+	s.readers = make(chan bool, 1)
+	s.writers = make(chan bool, 1)
+	s.explicitClose = false // Reset explicit close flag for new connection
 
 	// Set default values
 	if config.Encoding == "" {
@@ -138,9 +216,9 @@ func (s *Socket) Connect(config SocketConfig) error {
 
 	// Store config
 	s.config = config
-
+	
 	// Build address
-	addr := fmt.Sprintf("%s:%d", config.Host, config.Port)
+	addr := fmt.Sprintf("%s:%d", host, port)
 
 	// Set timeout
 	timeout := time.Duration(config.Timeout) * time.Millisecond
@@ -161,52 +239,52 @@ func (s *Socket) Connect(config SocketConfig) error {
 		conn, err = dialer.Dial("tcp", addr)
 	}
 	if err != nil {
-		if s.onError != nil {
-			s.onError(err)
-		}
+		// Connection failed - transition back to CLOSED
+		s.state.Set(StateClosed)
+		s.events.CallOnError(err)
 		return err
 	}
 
 	s.conn = conn
-	s.connected = true
+	
+	// Transition to OPEN state
+	if err := s.state.TransitionTo(StateOpen); err != nil {
+		// This should never happen, but handle it safely
+		conn.Close()
+		s.state.Set(StateClosed)
+		s.cancel() // Cancel the context
+		return fmt.Errorf("failed to transition to OPEN state: %w", err)
+	}
 
-	// Start reading messages in a goroutine
+	// Start reading messages in a goroutine with WaitGroup tracking
+	s.wg.Add(1)
 	go s.readLoop()
 
 	return nil
 }
 
 // On sets event handlers for the socket
-func (s *Socket) On(event string, handler interface{}) {
+func (s *Socket) On(event string, handler sobek.Value) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	switch event {
-	case "data":
-		if fn, ok := handler.(func([]byte)); ok {
-			s.onData = fn
-		}
-	case "message":
-		if fn, ok := handler.(func(interface{})); ok {
-			s.onMessage = fn
-		}
-	case "error":
-		if fn, ok := handler.(func(error)); ok {
-			s.onError = fn
-		}
-	case "end":
-		if fn, ok := handler.(func()); ok {
-			s.onEnd = fn
-		}
+	
+	if s.events != nil {
+		// EventManager exists, set handler directly
+		s.events.SetHandler(event, handler)
+	} else {
+		// Store handler until Connect() creates EventManager
+		s.pendingHandlers[event] = handler
 	}
 }
 
 // Send sends a message with length header (if configured)
 func (s *Socket) Send(data []byte) error {
-	s.mu.RLock()
-	if !s.connected {
-		s.mu.RUnlock()
-		return fmt.Errorf("socket not connected")
+	// Check state before attempting to send
+	if err := s.state.AssertOpen(); err != nil {
+		return err
 	}
+	
+	s.mu.RLock()
 	conn := s.conn
 	s.mu.RUnlock()
 
@@ -245,18 +323,14 @@ func (s *Socket) Send(data []byte) error {
 
 		// Write header first
 		if err := writeAll(conn, lengthHeader); err != nil {
-			if s.onError != nil {
-				s.onError(err)
-			}
+			s.events.CallOnError(err)
 			return err
 		}
 	}
 
 	// Write the actual data
 	if err := writeAll(conn, data); err != nil {
-		if s.onError != nil {
-			s.onError(err)
-		}
+		s.events.CallOnError(err)
 		return err
 	}
 
@@ -265,11 +339,12 @@ func (s *Socket) Send(data []byte) error {
 
 // Write sends raw data without any headers
 func (s *Socket) Write(data []byte) error {
-	s.mu.RLock()
-	if !s.connected {
-		s.mu.RUnlock()
-		return fmt.Errorf("socket not connected")
+	// Check state before attempting to write
+	if err := s.state.AssertOpen(); err != nil {
+		return err
 	}
+	
+	s.mu.RLock()
 	conn := s.conn
 	s.mu.RUnlock()
 
@@ -281,9 +356,7 @@ func (s *Socket) Write(data []byte) error {
 	}
 
 	if err := writeAll(conn, data); err != nil {
-		if s.onError != nil {
-			s.onError(err)
-		}
+		s.events.CallOnError(err)
 		return err
 	}
 
@@ -309,39 +382,84 @@ func writeAll(conn net.Conn, buf []byte) error {
 // Close closes the socket connection
 func (s *Socket) Close() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
-	if !s.connected {
+	// Check if already closed or closing
+	if s.state.IsClosed() {
+		s.mu.Unlock()
 		return nil
 	}
-
-	s.connected = false
-	err := s.conn.Close()
-	
-	if s.onEnd != nil {
-		s.onEnd()
+	if s.state.IsClosing() {
+		s.mu.Unlock()
+		return fmt.Errorf("socket is already closing")
 	}
 
+	// Transition to CLOSING state
+	if err := s.state.TransitionTo(StateClosing); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+
+	// Set explicit close flag BEFORE closing connection
+	// so readLoop knows not to call onEnd
+	s.explicitClose = true
+	
+	// Cancel the context to signal goroutines to stop
+	if s.cancel != nil {
+		s.cancel()
+	}
+	
+	// Close the connection (will cause readLoop to exit)
+	var err error
+	if s.conn != nil {
+		err = s.conn.Close()
+	}
+	
+	s.mu.Unlock()
+	
+	// Wait for all goroutines to finish
+	// This ensures proper cleanup before returning
+	s.wg.Wait()
+	
 	return err
 }
 
 // readLoop handles incoming data and processes messages
 func (s *Socket) readLoop() {
 	defer func() {
-		if s.onEnd != nil {
-			s.onEnd()
+		// Signal that this goroutine is done
+		defer s.wg.Done()
+		
+		// Check if this is an explicit close or unexpected disconnection
+		s.mu.RLock()
+		explicitClose := s.explicitClose
+		s.mu.RUnlock()
+		
+		if !explicitClose {
+			// Unexpected disconnection - call onEnd
+			s.events.CallOnEnd()
 		}
+		
+		// Always transition to CLOSED state
+		s.state.Set(StateClosed)
+		
+		// Always close event queue to allow VU to finish
+		s.events.Close()
 	}()
 
 	reader := bufio.NewReader(s.conn)
 
 	for {
-		s.mu.RLock()
-		if !s.connected {
-			s.mu.RUnlock()
+		// Check for context cancellation
+		select {
+		case <-s.ctx.Done():
+			return
+		default:
+		}
+		
+		// Check if we should continue reading
+		if !s.state.IsOpen() {
 			return
 		}
-		s.mu.RUnlock()
 
 		// Block to avoid busy spinning; single reader goroutine
 		s.readers <- true
@@ -354,8 +472,12 @@ func (s *Socket) readLoop() {
 				if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 					return
 				}
-				if s.onError != nil {
-					s.onError(err)
+				// Check if this is expected error from explicit close
+				s.mu.RLock()
+				explicitClose := s.explicitClose
+				s.mu.RUnlock()
+				if !explicitClose {
+					s.events.CallOnError(err)
 				}
 				return
 			}
@@ -367,8 +489,12 @@ func (s *Socket) readLoop() {
 				if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 					return
 				}
-				if s.onError != nil {
-					s.onError(err)
+				// Check if this is expected error from explicit close
+				s.mu.RLock()
+				explicitClose := s.explicitClose
+				s.mu.RUnlock()
+				if !explicitClose {
+					s.events.CallOnError(err)
 				}
 				return
 			}
@@ -380,8 +506,12 @@ func (s *Socket) readLoop() {
 				if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 					return
 				}
-				if s.onError != nil {
-					s.onError(err)
+				// Check if this is expected error from explicit close
+				s.mu.RLock()
+				explicitClose := s.explicitClose
+				s.mu.RUnlock()
+				if !explicitClose {
+					s.events.CallOnError(err)
 				}
 				return
 			}
@@ -424,16 +554,12 @@ func (s *Socket) readLengthPrefixedMessage(reader *bufio.Reader) error {
 	}
 
 	// Emit data event
-	if s.onData != nil {
-		allData := append(lengthBytes, messageData...)
-		s.onData(allData)
-	}
+	allData := append(lengthBytes, messageData...)
+	s.events.CallOnData(allData)
 
 	// Emit message event with decoded data
-	if s.onMessage != nil {
-		decoded := s.decodeMessage(messageData)
-		s.onMessage(decoded)
-	}
+	decoded := s.decodeMessage(messageData)
+	s.events.CallOnMessage(decoded)
 
 	return nil
 }
@@ -464,15 +590,11 @@ func (s *Socket) readDelimiterMessage(reader *bufio.Reader) error {
 				}
 
 				// Emit data event (including delimiter)
-				if s.onData != nil {
-					s.onData(buffer.Bytes())
-				}
+				s.events.CallOnData(buffer.Bytes())
 
 				// Emit message event with decoded data (without delimiter)
-				if s.onMessage != nil {
-					decoded := s.decodeMessage(messageData)
-					s.onMessage(decoded)
-				}
+				decoded := s.decodeMessage(messageData)
+				s.events.CallOnMessage(decoded)
 
 				return nil
 			}
@@ -501,14 +623,12 @@ func (s *Socket) readFixedLengthMessage(reader *bufio.Reader) error {
 	messageData = messageData[:n]
 
 	// Emit data event
-	if s.onData != nil {
-		s.onData(messageData)
-	}
+	s.events.CallOnData(messageData)
 
 	// Only emit message event if we have some data and encoding is not binary
-	if s.onMessage != nil && n > 0 && s.config.Encoding != "binary" {
+	if n > 0 && s.config.Encoding != "binary" {
 		decoded := s.decodeMessage(messageData)
-		s.onMessage(decoded)
+		s.events.CallOnMessage(decoded)
 	}
 
 	return nil

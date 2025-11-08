@@ -2,21 +2,25 @@
 import net from 'k6/x/net';
 import { check } from 'k6';
 
-// Create socket with typed configuration
-const socket = new net.Socket({
-  lengthFieldLength: 4,     // Type: number
-  maxLength: 1024 * 1024,   // Type: number  
-  encoding: "binary",       // Type: "utf-8" | "binary"
-  delimiter: ""             // Type: string
-});
-
 // Example configuration demonstrating type safety
 export default function () {
+  // Create socket instance
+  const socket = new net.Socket();
+
   console.log("Connecting to server...");
 
-  // Connect with proper error handling
+  // Connect with typed configuration
   try {
-    socket.connect("localhost:5000", 5000);
+    socket.connect('localhost', 5000, {
+      timeout: 5000,               // Connection timeout in milliseconds
+      lengthFieldLength: 4,         // Length field length: 0 | 1 | 2 | 4 | 8
+      maxLength: 1024 * 1024,       // Maximum message length in bytes (0 = unlimited)
+      encoding: "binary",           // Encoding: "utf-8" | "binary"
+      delimiter: "",                // Delimiter for UTF-8 messages
+      tls: false,                   // Enable TLS/SSL
+      serverName: "",               // Server name for TLS verification
+      insecureSkipVerify: false     // Skip TLS certificate verification
+    });
   } catch (error) {
     console.error("Connection failed:", error);
     return;
@@ -134,13 +138,14 @@ class ProtobufMessageBuilder implements MessageBuilder {
 
 // Usage with type safety
 export function advancedExample() {
-  const socket = new net.Socket({
+  const socket = new net.Socket();
+
+  socket.connect('localhost', 6000, {
+    timeout: 3000,
     lengthFieldLength: 4,
     encoding: "binary",
     maxLength: 10 * 1024 * 1024 // 10MB
   });
-
-  socket.connect("localhost:6000", 3000);
 
   // Type-safe message building
   const messageBuilder = new ProtobufMessageBuilder(

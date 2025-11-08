@@ -1,8 +1,24 @@
-#!/bin/bash
+#!/bin/sh
 
 # Simple build script for xk6-net extension with verification
 
 set -euo pipefail
+
+# Parse command line arguments
+OUTPUT_DIR=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --output)
+      OUTPUT_DIR="$2"
+      shift 2
+      ;;
+    *)
+      echo "Unknown option: $1"
+      echo "Usage: $0 [--output <directory>]"
+      exit 1
+      ;;
+  esac
+done
 
 echo "Installing xk6 (ensures binary is available)..."
 go install go.k6.io/xk6/cmd/xk6@latest
@@ -40,5 +56,13 @@ export default function () {
   console.log('xk6-net loaded:', typeof s.connect === 'function');
 }
 EOF
+
+# Copy to output directory if specified
+if [ -n "$OUTPUT_DIR" ]; then
+  echo "Copying k6 binary to $OUTPUT_DIR ..."
+  mkdir -p "$OUTPUT_DIR"
+  cp -f "$K6_BIN" "$OUTPUT_DIR/"
+  echo "Binary copied to: $OUTPUT_DIR/k6"
+fi
 
 echo "Build and verification complete. Use: $K6_BIN run <script.js>"
