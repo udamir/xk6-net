@@ -1,6 +1,6 @@
 # xk6-net
 
-A [k6 extension](https://grafana.com/docs/k6/latest/extensions/) for TCP and UDP socket operations with message handling capabilities
+A [k6 extension](https://grafana.com/docs/k6/latest/extensions/) for TCP socket operations with message handling capabilities
 
 ## Build
 
